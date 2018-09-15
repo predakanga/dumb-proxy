@@ -39,16 +39,6 @@ import (
 
 var (
 	cfgFile              string
-	egressIp             string
-	verbosity            int
-	proxyModeString      string
-	disableConnect       bool
-	omitForwarded        bool
-	filteredDestinations []string
-	listenAddr           string
-	metricsAddr          string
-	tlsCertificate       string
-	tlsKey               string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -86,25 +76,34 @@ func init() {
 	// will be global for your application.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dumb-proxy.yaml)")
 
+	flags := rootCmd.Flags()
+
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
-	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v", "verbosity (use multiple times to increase)")
+	flags.CountP("verbose", "v", "verbosity (use multiple times to increase)")
+	viper.BindPFlag("verbosity", flags.Lookup("verbose"))
 
 	// Server options
-	rootCmd.Flags().StringVarP(&listenAddr, "listen", "l", ":43443", "address to listen on")
-	rootCmd.Flags().StringVar(&metricsAddr, "metrics-listen", ":43440", "address to serve metrics on")
-	rootCmd.Flags().StringVar(&tlsCertificate, "tls-certificate", "", "path to TLS certificate")
-	rootCmd.Flags().StringVar(&tlsKey, "tls-key", "", "path to TLS key")
+	flags.StringP("listen-addr", "l", ":43443", "address to listen on")
+	flags.String("metrics-listen-addr", ":43440", "address to serve metrics on")
+	flags.String("tls-certificate", "", "path to TLS certificate")
+	flags.String("tls-key", "", "path to TLS key")
+	viper.BindPFlag("listen_addr", flags.Lookup("listen-addr"))
+	viper.BindPFlag("metrics_listen_addr", flags.Lookup("metrics-listen-addr"))
+	viper.BindPFlag("tls_certificate", flags.Lookup("tls-certificate"))
+	viper.BindPFlag("tls_key", flags.Lookup("tls-key"))
+
 	// Proxy options
-	rootCmd.Flags().StringVarP(&egressIp, "egress-ip", "e", "", "address to make requests from")
-	// Disable connect
-	rootCmd.Flags().BoolVar(&disableConnect, "disable-connect", false, "disables forwarding CONNECT requests")
-	// Proxy mode
-	rootCmd.Flags().StringVarP(&proxyModeString, "mode", "m", "both", "requests to handle: http, transport, or both")
-	// Omit forwarded
-	rootCmd.Flags().BoolVar(&omitForwarded, "omit-forwarded", false, "omits the X-Forwarded-For header from requests")
-	// Filters
-	rootCmd.Flags().StringArrayVarP(&filteredDestinations, "exclude", "x", []string {}, "rejects any requests to a destination (domain name, IP or CIDR)")
+	flags.StringP("egress-ip", "e", "", "address to make requests from")
+	flags.Bool("disable-connect", false, "disables forwarding CONNECT requests")
+	flags.StringP("mode", "m", "both", "requests to handle: http, transport, or both")
+	flags.Bool("omit-forwarded", false, "omits the X-Forwarded-For header from requests")
+	flags.StringArrayP("exclude", "x", []string {}, "rejects any requests to a destination (domain name, IP or CIDR)")
+	viper.BindPFlag("egress_ip", flags.Lookup("egress-ip"))
+	viper.BindPFlag("disable_connect", flags.Lookup("disable-connect"))
+	viper.BindPFlag("mode", flags.Lookup("mode"))
+	viper.BindPFlag("omit_forwarded", flags.Lookup("omit-forwarded"))
+	viper.BindPFlag("exclusions", flags.Lookup("exclude"))
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -185,6 +184,18 @@ func parseExclusions(exclusions []string) []MatcherFunc {
 
 func run(cmd *cobra.Command, args []string) {
 	var localAddr net.Addr
+
+	// Confused that there doesn't seem to be a better way to do this
+	egressIp := viper.GetString("egress_ip")
+	verbosity := viper.GetInt("verbosity")
+	proxyModeString := viper.GetString("mode")
+	disableConnect := viper.GetBool("disable_connect")
+	omitForwarded := viper.GetBool("omit_forwarded")
+	filteredDestinations := viper.GetStringSlice("exclusions")
+	listenAddr := viper.GetString("listen_addr")
+	metricsAddr := viper.GetString("metrics_listen_addr")
+	tlsCertificate := viper.GetString("tls_certificate")
+	tlsKey := viper.GetString("tls_key")
 
 	switch verbosity {
 	case 0:

@@ -16,7 +16,7 @@ const asciiLettersSize = len(asciiLetters)
 func randomString(length int) string {
 	bytes := make([]byte, length)
 
-	for i := range(bytes) {
+	for i := range bytes {
 		bytes[i] = asciiLetters[rand.Intn(asciiLettersSize)]
 	}
 
