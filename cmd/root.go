@@ -37,6 +37,19 @@ import (
 	"github.com/spf13/viper"
 )
 
+type Config struct {
+	EgressIp             string   `mapstructure:"egress_ip"`
+	Verbosity            int      `mapstructure:"verbosity"`
+	ProxyMode            string   `mapstructure:"mode"`
+	DisableConnect       bool     `mapstructure:"disable_connect"`
+	OmitForwarded        bool     `mapstructure:"omit_forwarded"`
+	FilteredDestinations []string `mapstructure:"exclusions"`
+	ListenAddr           string   `mapstructure:"listen_addr"`
+	MetricsAddr          string   `mapstructure:"metrics_listen_addr"`
+	TlsCertificate       string   `mapstructure:"tls_certificate"`
+	TlsKey               string   `mapstructure:"tls_key"`
+}
+
 var (
 	cfgFile              string
 )
@@ -98,7 +111,7 @@ func init() {
 	flags.Bool("disable-connect", false, "disables forwarding CONNECT requests")
 	flags.StringP("mode", "m", "both", "requests to handle: http, transport, or both")
 	flags.Bool("omit-forwarded", false, "omits the X-Forwarded-For header from requests")
-	flags.StringArrayP("exclude", "x", []string {}, "rejects any requests to a destination (domain name, IP or CIDR)")
+	flags.StringSliceP("exclude", "x", []string {}, "rejects any requests to a destination (domain name, IP or CIDR)")
 	viper.BindPFlag("egress_ip", flags.Lookup("egress-ip"))
 	viper.BindPFlag("disable_connect", flags.Lookup("disable-connect"))
 	viper.BindPFlag("mode", flags.Lookup("mode"))
@@ -128,7 +141,7 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
+		log.Info("Using config file: ", viper.ConfigFileUsed())
 	}
 }
 
@@ -146,7 +159,7 @@ func parseExclusions(exclusions []string) []MatcherFunc {
 				// ResolveIP is a no-op if target is already an IP
 				if targetAddr, err := net.ResolveIPAddr("tcp", target); err != nil {
 					// Fail open, or closed? Closed would cause 404 when it should return 500
-					log.Warnf("Failed to resolve %v in matcher: %v", target, err)
+					log.Warn("Failed to resolve ", target, " in matcher: ", err)
 					return true
 				} else {
 					if targetAddr.IP.Equal(ip) {
@@ -159,7 +172,7 @@ func parseExclusions(exclusions []string) []MatcherFunc {
 		} else if _, network, err := net.ParseCIDR(exclusion); err != nil {
 			netMatcher := func(target string) bool {
 				if targetAddr, err := net.ResolveIPAddr("tcp", target); err != nil {
-					log.Warnf("Failed to resolve %v in matcher: %v", target, err)
+					log.Warn("Failed to resolve ", target, " in matcher: ", err)
 					return true
 				} else {
 					if network.Contains(targetAddr.IP) {
@@ -185,19 +198,13 @@ func parseExclusions(exclusions []string) []MatcherFunc {
 func run(cmd *cobra.Command, args []string) {
 	var localAddr net.Addr
 
-	// Confused that there doesn't seem to be a better way to do this
-	egressIp := viper.GetString("egress_ip")
-	verbosity := viper.GetInt("verbosity")
-	proxyModeString := viper.GetString("mode")
-	disableConnect := viper.GetBool("disable_connect")
-	omitForwarded := viper.GetBool("omit_forwarded")
-	filteredDestinations := viper.GetStringSlice("exclusions")
-	listenAddr := viper.GetString("listen_addr")
-	metricsAddr := viper.GetString("metrics_listen_addr")
-	tlsCertificate := viper.GetString("tls_certificate")
-	tlsKey := viper.GetString("tls_key")
+	var c Config
 
-	switch verbosity {
+	if err := viper.Unmarshal(&c); err != nil {
+		log.Fatal("Couldn't load config ", err)
+	}
+
+	switch c.Verbosity {
 	case 0:
 		log.SetLevel(log.WarnLevel)
 	case 1:
@@ -208,25 +215,25 @@ func run(cmd *cobra.Command, args []string) {
 		log.SetLevel(log.DebugLevel)
 	}
 
-	if egressIp != "" {
-		log.Infof("Sending requests from %v", egressIp)
+	if c.EgressIp != "" {
+		log.Info("Sending requests from ", c.EgressIp)
 		// Log: Using IP localIP
 		localAddr = &net.TCPAddr{
-			IP: net.ParseIP(egressIp),
+			IP: net.ParseIP(c.EgressIp),
 		}
 	}
 
-	matchers := parseExclusions(filteredDestinations)
+	matchers := parseExclusions(c.FilteredDestinations)
 
-	proxyMode, ok := proxyModeMap[proxyModeString]
+	proxyMode, ok := proxyModeMap[c.ProxyMode]
 	if !ok {
-		log.Fatalf("Invalid proxy mode: %v", proxyModeString)
+		log.Fatal("Invalid proxy mode: ", c.ProxyMode)
 	}
 
 	requestProxy := &proxy.Proxy{
 		EgressAddress: localAddr,
-		OmitForwardedHeaders: omitForwarded,
-		DisableConnect: disableConnect,
+		OmitForwardedHeaders: c.OmitForwarded,
+		DisableConnect: c.DisableConnect,
 		ProxyMode: proxyMode,
 	}
 
@@ -258,7 +265,7 @@ func run(cmd *cobra.Command, args []string) {
 	// FIXME: This is a really dodgy way of forcing output
 	oldLevel := log.GetLevel()
 	log.SetLevel(log.InfoLevel)
-	log.Infof("Starting server on %v", listenAddr)
+	log.Info("Starting server on ", c.ListenAddr)
 	log.SetLevel(oldLevel)
 
 
@@ -266,14 +273,14 @@ func run(cmd *cobra.Command, args []string) {
 		// N.B. This isn't scoped to the metrics server because of the goroutine.
 		// It happens because we override the handler for our proxy server
 		http.Handle("/metrics", promhttp.Handler())
-		if err := http.ListenAndServe(metricsAddr, nil); err != nil {
-			log.Fatalf("Couldn't start metrics server: %v", err)
+		if err := http.ListenAndServe(c.MetricsAddr, nil); err != nil {
+			log.Fatal("Couldn't start metrics server: ", err)
 		}
 	}()
 
-	if tlsCertificate != "" {
-		if certs, err := certman.New(tlsCertificate, tlsKey); err != nil {
-			log.Fatalf("Failed to load TLS certificates: %v", err)
+	if c.TlsCertificate != "" {
+		if certs, err := certman.New(c.TlsCertificate, c.TlsKey); err != nil {
+			log.Fatal("Failed to load TLS certificates: ", err)
 		} else {
 			certLogger := proxy.LeveledLogger{
 				Logger: log.StandardLogger(),
@@ -281,22 +288,22 @@ func run(cmd *cobra.Command, args []string) {
 			}
 			certs.Logger(certLogger)
 			if err := certs.Watch(); err != nil {
-				log.Fatalf("Couldn't watch TLS certificates: %v", err)
+				log.Fatal("Couldn't watch TLS certificates: ", err)
 			}
 			tlsServer := &http.Server{
-				Addr: listenAddr,
+				Addr: c.ListenAddr,
 				Handler: requestProxy,
 				TLSConfig: &tls.Config {
 					GetCertificate: certs.GetCertificate,
 				},
 			}
 			if err := tlsServer.ListenAndServeTLS("", ""); err != nil {
-				log.Fatalf("Couldn't start server: %v", err)
+				log.Fatal("Couldn't start server: ", err)
 			}
 		}
 	} else {
-		if err := http.ListenAndServe(listenAddr, requestProxy); err != nil {
-			log.Fatalf("Couldn't start server: %v", err)
+		if err := http.ListenAndServe(c.ListenAddr, requestProxy); err != nil {
+			log.Fatal("Couldn't start server: ", err)
 		}
 	}
 }

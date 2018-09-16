@@ -63,7 +63,7 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 	// Transparent requests will have an empty host in their URL
 	if proxiedUrl.Host == "" {
 		if p.ProxyMode == HttpProxy {
-			log.Debugf("Received transparent request while not in transparent mode: %v", req)
+			log.Debug("Received transparent request while not in transparent mode: ", req)
 			defaultHttpError(w, http.StatusBadRequest)
 			return
 		}
@@ -76,14 +76,14 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 		}
 	} else if p.ProxyMode == TransparentProxy {
 		// Received an HTTP proxy request while in transparent-only mode
-		log.Debugf("Received proxy request while not in proxy mode: %v", req)
+		log.Debug("Received proxy request while not in proxy mode: ", req)
 		defaultHttpError(w, http.StatusBadRequest)
 		return
 	}
 
 	if proxiedUrl.Scheme != "http" && proxiedUrl.Scheme != "https" {
 		// Log - request received with invalid Scheme
-		log.Debugf("Received request with invalid scheme: %v", proxiedUrl.Scheme)
+		log.Debug("Received request with invalid scheme: ", proxiedUrl.Scheme)
 		defaultHttpError(w, http.StatusBadRequest)
 		return
 	}
@@ -96,8 +96,8 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 	}
 	currentVia := req.Header.Get("Via")
 	for _, viaSegment := range strings.Split(currentVia, ", ") {
-		if viaSegment == p.Identifier {
-			log.Warnf("Encountered looping request: %v", req)
+		if viaSegment == p.cachedIdentifier {
+			log.Warn("Encountered looping request: ", req)
 			defaultHttpError(w, http.StatusLoopDetected)
 			return
 		}
@@ -105,7 +105,7 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 
 	// Create our new request - we only need the URL and headers
 	if proxiedReq, err = http.NewRequest(req.Method, proxiedUrl.String(), req.Body); err != nil {
-		log.Warnf("Failed to create new request: %v", err)
+		log.Warn("Failed to create new request: ", err)
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	}
@@ -126,7 +126,7 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 	// And add our own forwarded headers if need be
 	if !p.OmitForwardedHeaders {
 		if host, _, err := net.SplitHostPort(req.RemoteAddr); err != nil {
-			log.Errorf("Encountered a request with invalid RemoteAddr: %v", req.RemoteAddr)
+			log.Error("Encountered a request with invalid RemoteAddr: ", req.RemoteAddr)
 			defaultHttpError(w, http.StatusInternalServerError)
 			return
 		} else {
@@ -146,10 +146,10 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// And make it so
-	log.Infof("Retrieving %v for %v", proxiedUrl.String(), req.RemoteAddr)
+	log.Info("Retrieving ", proxiedUrl.String(), " for ", req.RemoteAddr)
 	proxiedRequests.Inc()
 	if resp, err := p.Transport.RoundTrip(proxiedReq); err != nil {
-		log.Warnf("Failed to make request to %v: %v", proxiedUrl, err)
+		log.Warn("Failed to make request to ", proxiedUrl, ": ", err)
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	} else {
@@ -174,7 +174,7 @@ func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Warnf("Failed to hijack request: Hijack not supported (in %v)", req)
+		log.Warn("Failed to hijack request: Hijack not supported")
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	}
@@ -182,7 +182,7 @@ func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
 	// Make sure the request has a valid port
 	dstAddr := req.RequestURI
 	if _, _, err := net.SplitHostPort(dstAddr); err != nil {
-		log.Warnf("Received a CONNECT request for an invalid address: %v", req)
+		log.Warn("Received a CONNECT request for an invalid address: ", req)
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	}
@@ -196,19 +196,19 @@ func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
 	// Establish our connection before hijacking, so that go can send an error if need be
 	dstConn, err := p.Transport.DialContext(req.Context(), "tcp", req.RequestURI)
 	if err != nil {
-		log.Warnf("Couldn't connect to %v while handling %v: %v", dstAddr, req, err)
+		log.Warn("Couldn't connect to ", dstAddr, " while handling ", req, ": ", err)
 		defaultHttpError(w, http.StatusServiceUnavailable)
 		return
 	}
 
 	// Have to send an OK before starting the tunnel
-	log.Infof("Tunneling %v for %v", dstAddr, req.RemoteAddr)
+	log.Info("Tunneling ", dstAddr, " for ", req.RemoteAddr)
 	tunneledRequests.Inc()
 	w.WriteHeader(http.StatusOK)
 
 	srcConn, pendingBuffer, err := hijacker.Hijack()
 	if err != nil {
-		log.Warnf("Failed to hijack request: %v (in %v)", err, req)
+		log.Warn("Failed to hijack request: ", err, " (in ", req, ")")
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	}
