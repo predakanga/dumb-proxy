@@ -23,14 +23,18 @@ func randomString(length int) string {
 	return string(bytes)
 }
 
-func pipe(src net.Conn, dst net.Conn, pending *bufio.ReadWriter) {
+func pipe(src net.Conn, dst net.Conn, pending *bufio.ReadWriter, direction string) {
 	defer src.Close()
 	defer dst.Close()
 
+	transferMetric := dataTransferred.WithLabelValues("tunnel", direction)
+
 	if pending != nil {
-		pending.WriteTo(dst)
+		pendingWritten, _ := pending.WriteTo(dst)
+		transferMetric.Add(float64(pendingWritten))
 	}
-	io.Copy(dst, src)
+	written, _ := io.Copy(dst, src)
+	transferMetric.Add(float64(written))
 }
 
 func defaultHttpError(w http.ResponseWriter, code int) {

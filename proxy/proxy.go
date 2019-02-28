@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"sort"
 	"strings"
 )
@@ -34,9 +35,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if p.DisableConnect {
 			defaultHttpError(w, http.StatusForbidden)
 		} else {
+			inflightMetric := inflightRequests.WithLabelValues("tunnel")
+			inflightMetric.Inc()
+			defer inflightMetric.Dec()
+
 			p.ServeTunnel(w, req)
 		}
 	} else {
+		inflightMetric := inflightRequests.WithLabelValues("http")
+		inflightMetric.Inc()
+		defer inflightMetric.Dec()
+
 		p.ServeProxy(w, req)
 	}
 }
@@ -46,10 +55,6 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 		proxiedReq *http.Request
 		err error
 	)
-
-	// Stat tracking
-	currentRequests.Inc()
-	defer currentRequests.Dec()
 
 	// SearchStrings returns len(a) when the string isn't found
 	if sort.SearchStrings(allowedMethods, req.Method) == len(allowedMethods) {
@@ -138,6 +143,12 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+	// Check whether we have a whitelist of headers
+	var headerWhitelist sort.StringSlice
+	if allowedHeaders := req.Header.Get("X-Allowed-Headers"); allowedHeaders != "" {
+		headerWhitelist = strings.Split(strings.ToLower(allowedHeaders), ", ")
+		sort.Sort(headerWhitelist)
+	}
 
 	// Finally, check that we should send it
 	if p.RequestFilter != nil && !p.RequestFilter(*proxiedReq) {
@@ -147,19 +158,36 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 
 	// And make it so
 	log.Info("Retrieving ", proxiedUrl.String(), " for ", req.RemoteAddr)
-	proxiedRequests.Inc()
+	servedRequests.WithLabelValues("http").Inc()
+
+	// TODO: Need a better way of doing this - something that wraps the underlying writers
+	outBytes, _ := httputil.DumpRequestOut(proxiedReq, true)
+	dataTransferred.WithLabelValues("http", "out").Add(float64(len(outBytes)))
+
 	if resp, err := p.Transport.RoundTrip(proxiedReq); err != nil {
-		log.Warn("Failed to make request to ", proxiedUrl, ": ", err)
+		log.Warn("Failed to make request to ", proxiedUrl.String(), ": ", err)
 		defaultHttpError(w, http.StatusInternalServerError)
 		return
 	} else {
-		// TODO: Check if we can just use Write
-		//resp.Write(w)
+		// TODO: As above; this is quite wasteful
+		inBytes, _ := httputil.DumpResponse(resp, true)
+		dataTransferred.WithLabelValues("http", "in").Add(float64(len(inBytes)))
+
+		// NB: We can't just use resp.Write; that would duplicate status codes
 		defer resp.Body.Close()
 		// Headers have to be added before calling WriteHeader
 		for headerName, headerValues := range resp.Header {
-			for _, headerValue := range headerValues {
-				w.Header().Add(headerName, headerValue)
+			headerAllowed := true
+			if headerWhitelist != nil {
+				searchString := strings.ToLower(headerName)
+				foundIdx := headerWhitelist.Search(strings.ToLower(headerName))
+				endIdx := headerWhitelist.Len()
+				headerAllowed = foundIdx < endIdx && headerWhitelist[foundIdx] == searchString
+			}
+			if headerAllowed {
+				for _, headerValue := range headerValues {
+					w.Header().Add(headerName, headerValue)
+				}
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
@@ -168,10 +196,6 @@ func (p *Proxy) ServeProxy(w http.ResponseWriter, req *http.Request) {
 }
 
 func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
-	// Stat tracking
-	currentTunnels.Inc()
-	defer currentTunnels.Dec()
-
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		log.Warn("Failed to hijack request: Hijack not supported")
@@ -203,7 +227,7 @@ func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
 
 	// Have to send an OK before starting the tunnel
 	log.Info("Tunneling ", dstAddr, " for ", req.RemoteAddr)
-	tunneledRequests.Inc()
+	servedRequests.WithLabelValues("tunnel").Inc()
 	w.WriteHeader(http.StatusOK)
 
 	srcConn, pendingBuffer, err := hijacker.Hijack()
@@ -213,6 +237,6 @@ func (p *Proxy) ServeTunnel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	go pipe(srcConn, dstConn, pendingBuffer)
-	go pipe(dstConn, srcConn, nil)
+	go pipe(srcConn, dstConn, pendingBuffer, "out")
+	go pipe(dstConn, srcConn, nil, "in")
 }

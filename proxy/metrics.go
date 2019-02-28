@@ -3,24 +3,23 @@ package proxy
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
-	proxiedRequests = prometheus.NewCounter(prometheus.CounterOpts {
-		Name: "proxied_requests",
-		Help: "Number of requests proxied",
-	})
-	tunneledRequests = prometheus.NewCounter(prometheus.CounterOpts {
-		Name: "tunneled_requests",
-		Help: "Number of tunnels created",
-	})
-	currentRequests = prometheus.NewGauge(prometheus.GaugeOpts {
-		Name: "current_requests",
-		Help: "Number of requests currently in flight",
-	})
-	currentTunnels = prometheus.NewGauge(prometheus.GaugeOpts {
-		Name: "current_tunnels",
-		Help: "Number of tunnels currently open",
-	})
+	servedRequests = prometheus.NewCounterVec(prometheus.CounterOpts {
+		Namespace: "proxy",
+		Name: "served_requests_total",
+		Help: "Number of served requests",
+	}, []string{"type"})
+	inflightRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts {
+		Namespace: "proxy",
+		Name: "inflight_requests",
+		Help: "Number of currently running requests",
+	}, []string{"type"})
+	dataTransferred = prometheus.NewCounterVec(prometheus.CounterOpts {
+		Namespace: "proxy",
+		Name: "transferred_bytes_total",
+		Help: "Bytes transferred since the server started",
+	}, []string{"type", "direction"})
 )
 
 func init() {
-	prometheus.MustRegister(proxiedRequests, tunneledRequests, currentRequests, currentTunnels)
+	prometheus.MustRegister(servedRequests, inflightRequests, dataTransferred)
 }
