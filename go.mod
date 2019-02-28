@@ -4,6 +4,7 @@ require (
 	github.com/BurntSushi/toml v0.3.0 // indirect
 	github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973 // indirect
 	github.com/dyson/certman v0.2.1
+	github.com/gorilla/handlers v1.4.0
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/mitchellh/go-homedir v1.0.0

@@ -29,6 +29,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/gorilla/handlers"
 	"github.com/mitchellh/go-homedir"
 	"github.com/predakanga/dumb-proxy/proxy"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -43,6 +44,7 @@ type Config struct {
 	ProxyMode            string   `mapstructure:"mode"`
 	DisableConnect       bool     `mapstructure:"disable_connect"`
 	OmitForwarded        bool     `mapstructure:"omit_forwarded"`
+	AccessLogs           bool     `mapstructure:"access_logs"`
 	FilteredDestinations []string `mapstructure:"exclusions"`
 	ListenAddr           string   `mapstructure:"listen_addr"`
 	MetricsAddr          string   `mapstructure:"metrics_listen_addr"`
@@ -112,11 +114,13 @@ func init() {
 	flags.StringP("mode", "m", "both", "requests to handle: http, transport, or both")
 	flags.Bool("omit-forwarded", false, "omits the X-Forwarded-For header from requests")
 	flags.StringSliceP("exclude", "x", []string {}, "rejects any requests to a destination (domain name, IP or CIDR)")
+	flags.Bool("access-logs", false, "outputs access logs in Combined Log Format")
 	viper.BindPFlag("egress_ip", flags.Lookup("egress-ip"))
 	viper.BindPFlag("disable_connect", flags.Lookup("disable-connect"))
 	viper.BindPFlag("mode", flags.Lookup("mode"))
 	viper.BindPFlag("omit_forwarded", flags.Lookup("omit-forwarded"))
 	viper.BindPFlag("exclusions", flags.Lookup("exclude"))
+	viper.BindPFlag("access_logs", flags.Lookup("access-logs"))
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -262,6 +266,11 @@ func run(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	var handler http.Handler = requestProxy
+	if c.AccessLogs {
+		handler = handlers.LoggingHandler(os.Stdout, handler)
+	}
+
 	// FIXME: This is a really dodgy way of forcing output
 	oldLevel := log.GetLevel()
 	log.SetLevel(log.InfoLevel)
@@ -292,7 +301,7 @@ func run(cmd *cobra.Command, args []string) {
 			}
 			tlsServer := &http.Server{
 				Addr: c.ListenAddr,
-				Handler: requestProxy,
+				Handler: handler,
 				TLSConfig: &tls.Config {
 					GetCertificate: certs.GetCertificate,
 				},
@@ -302,7 +311,7 @@ func run(cmd *cobra.Command, args []string) {
 			}
 		}
 	} else {
-		if err := http.ListenAndServe(c.ListenAddr, requestProxy); err != nil {
+		if err := http.ListenAndServe(c.ListenAddr, handler); err != nil {
 			log.Fatal("Couldn't start server: ", err)
 		}
 	}
